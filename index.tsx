@@ -16,65 +16,96 @@ export class GdmLiveAudio extends LitElement {
   @state() status = '';
   @state() error = '';
 
-  private client: GoogleGenAI;
-  private session: Session;
-  private inputAudioContext = new (window.AudioContext ||
-    window.webkitAudioContext)({sampleRate: 16000});
-  private outputAudioContext = new (window.AudioContext ||
-    window.webkitAudioContext)({sampleRate: 24000});
+  private client!: GoogleGenAI;
+  private session!: Session;
+  private inputAudioContext = new ((window.AudioContext ||
+    // @ts-ignore
+    (window as any).webkitAudioContext))({sampleRate: 16000});
+  private outputAudioContext = new ((window.AudioContext ||
+    // @ts-ignore
+    (window as any).webkitAudioContext))({sampleRate: 24000});
   @state() inputNode = this.inputAudioContext.createGain();
   @state() outputNode = this.outputAudioContext.createGain();
   private nextStartTime = 0;
-  private mediaStream: MediaStream;
-  private sourceNode: AudioBufferSourceNode;
-  private scriptProcessorNode: ScriptProcessorNode;
+  private mediaStream: MediaStream | null = null;
+  private sourceNode?: MediaStreamAudioSourceNode | null;
+  private scriptProcessorNode?: ScriptProcessorNode;
   private sources = new Set<AudioBufferSourceNode>();
 
   static styles = css`
-    #status {
-      position: absolute;
-      bottom: 5vh;
-      left: 0;
-      right: 0;
-      z-index: 10;
-      text-align: center;
-    }
+  #status {
+    position: absolute;
+    bottom: 5vh;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    text-align: center;
+  }
 
+  .controls {
+    z-index: 10;
+    position: absolute;
+    bottom: 10vh;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .controls button {
+    outline: none;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: white;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.1);
+    width: 18vw;
+    height: 18vw;
+    max-width: 120px;
+    max-height: 120px;
+    min-width: 64px;
+    min-height: 64px;
+    cursor: pointer;
+    font-size: 7vw;
+    padding: 0;
+    margin: 0;
+    touch-action: manipulation;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    transition: background 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .controls button svg {
+    width: 60%;
+    height: 60%;
+  }
+
+  .controls button:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  .controls button[disabled] {
+    display: none;
+  }
+
+  @media (max-width: 600px) {
     .controls {
-      z-index: 10;
-      position: absolute;
-      bottom: 10vh;
-      left: 0;
-      right: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      gap: 10px;
-
-      button {
-        outline: none;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        color: white;
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.1);
-        width: 64px;
-        height: 64px;
-        cursor: pointer;
-        font-size: 24px;
-        padding: 0;
-        margin: 0;
-
-        &:hover {
-          background: rgba(255, 255, 255, 0.2);
-        }
-      }
-
-      button[disabled] {
-        display: none;
-      }
+      bottom: 5vh;
+      gap: 6vw;
     }
-  `;
+    .controls button {
+      width: 24vw;
+      height: 24vw;
+      font-size: 10vw;
+      max-width: 90px;
+      max-height: 90px;
+    }
+  }
+`;
 
   constructor() {
     super();
@@ -109,7 +140,7 @@ export class GdmLiveAudio extends LitElement {
           },
           onmessage: async (message: LiveServerMessage) => {
             const audio =
-              message.serverContent?.modelTurn?.parts[0]?.inlineData;
+              message.serverContent?.modelTurn?.parts?.[0]?.inlineData;
 
             if (audio) {
               this.nextStartTime = Math.max(
@@ -117,22 +148,29 @@ export class GdmLiveAudio extends LitElement {
                 this.outputAudioContext.currentTime,
               );
 
-              const audioBuffer = await decodeAudioData(
-                decode(audio.data),
-                this.outputAudioContext,
-                24000,
-                1,
-              );
-              const source = this.outputAudioContext.createBufferSource();
-              source.buffer = audioBuffer;
-              source.connect(this.outputNode);
-              source.addEventListener('ended', () =>{
-                this.sources.delete(source);
-              });
+              let audioBuffer: AudioBuffer | undefined;
 
-              source.start(this.nextStartTime);
-              this.nextStartTime = this.nextStartTime + audioBuffer.duration;
-              this.sources.add(source);
+              if (typeof audio.data === 'string') {
+                audioBuffer = await decodeAudioData(
+                  decode(audio.data),
+                  this.outputAudioContext,
+                  24000,
+                  1,
+                );
+              }
+
+              if (audioBuffer) {
+                const source = this.outputAudioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(this.outputNode);
+                source.addEventListener('ended', () => {
+                  this.sources.delete(source);
+                });
+
+                source.start(this.nextStartTime);
+                this.nextStartTime = this.nextStartTime + audioBuffer.duration;
+                this.sources.add(source);
+              }
             }
 
             const interrupted = message.serverContent?.interrupted;
@@ -217,7 +255,8 @@ export class GdmLiveAudio extends LitElement {
       this.updateStatus('🔴 Recording... Capturing PCM chunks.');
     } catch (err) {
       console.error('Error starting recording:', err);
-      this.updateStatus(`Error: ${err.message}`);
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.updateStatus(`Error: ${errorMsg}`);
       this.stopRecording();
     }
   }
@@ -235,7 +274,7 @@ export class GdmLiveAudio extends LitElement {
       this.sourceNode.disconnect();
     }
 
-    this.scriptProcessorNode = null;
+    this.scriptProcessorNode = undefined;
     this.sourceNode = null;
 
     if (this.mediaStream) {
